@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Weather Lookup — API Gateway Demo</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --card: #1e293b;
+    --text: #f1f5f9;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --error: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 24px;
+  }
+  .card {
+    width: 100%;
+    max-width: 420px;
+    background: var(--card);
+    border-radius: 16px;
+    padding: 32px 28px;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.35);
+  }
+  h1 {
+    font-size: 1.3rem;
+    margin: 0 0 4px;
+  }
+  p.subtitle {
+    color: var(--muted);
+    font-size: 0.9rem;
+    margin: 0 0 24px;
+  }
+  form {
+    display: flex;
+    gap: 8px;
+  }
+  input[type="text"] {
+    flex: 1;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid #334155;
+    background: #0f172a;
+    color: var(--text);
+    font-size: 1rem;
+  }
+  input[type="text"]:focus {
+    outline: 2px solid var(--accent);
+  }
+  button {
+    padding: 12px 18px;
+    border-radius: 10px;
+    border: none;
+    background: var(--accent);
+    color: #0f172a;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 1rem;
+  }
+  button:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .result {
+    margin-top: 24px;
+    min-height: 90px;
+  }
+  .location {
+    font-size: 1rem;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .temp {
+    font-size: 3rem;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .details {
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  .error {
+    color: var(--error);
+    font-size: 0.9rem;
+  }
+  .footer-note {
+    margin-top: 24px;
+    font-size: 0.75rem;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+  .footer-note code {
+    background: #0f172a;
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>Weather Lookup</h1>
+  <p class="subtitle">Type a city — backed by a Lambda + API Gateway project</p>
+
+  <form id="weather-form">
+    <input type="text" id="location-input" placeholder="e.g. Atlanta, GA" autocomplete="off" />
+    <button type="submit" id="submit-btn">Search</button>
+  </form>
+
+  <div class="result" id="result"></div>
+
+  <div class="footer-note">
+    Geocoding via Open-Meteo's free geocoding API, weather data via a Lambda-backed
+    API Gateway endpoint built as part of an AWS learning project. Set
+    <code>API_URL</code> at the top of the script to your own deployed endpoint.
+  </div>
+</div>
+
+<script>
+  // Replace with your own HTTP API invoke URL (the CORS-enabled one --
+  // no API key required). If you deployed via the CloudFormation template,
+  // this is the "HttpApiUrl" output value.
+  const API_URL = "https://u2pfy4lrth.execute-api.us-east-2.amazonaws.com/weather";
+
+  const form = document.getElementById('weather-form');
+  const input = document.getElementById('location-input');
+  const resultEl = document.getElementById('result');
+  const submitBtn = document.getElementById('submit-btn');
+
+  const WEATHER_CODES = {
+    0: 'Clear sky', 1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
+    45: 'Fog', 48: 'Depositing rime fog',
+    51: 'Light drizzle', 53: 'Moderate drizzle', 55: 'Dense drizzle',
+    61: 'Slight rain', 63: 'Moderate rain', 65: 'Heavy rain',
+    71: 'Slight snow', 73: 'Moderate snow', 75: 'Heavy snow',
+    80: 'Rain showers', 81: 'Moderate rain showers', 82: 'Violent rain showers',
+    95: 'Thunderstorm', 96: 'Thunderstorm with hail', 99: 'Thunderstorm with heavy hail'
+  };
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const query = input.value.trim();
+    if (!query) return;
+
+    submitBtn.disabled = true;
+    resultEl.innerHTML = '<div class="details">Looking up…</div>';
+
+    try {
+      // Step 1: turn the typed location into coordinates
+      const geoRes = await fetch(
+        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=1`
+      );
+      const geoData = await geoRes.json();
+
+      if (!geoData.results || geoData.results.length === 0) {
+        resultEl.innerHTML = `<div class="error">Couldn't find "${query}". Try a different spelling or a nearby city.</div>`;
+        return;
+      }
+
+      const place = geoData.results[0];
+
+      // Step 2: call your own weather API with those coordinates
+      const weatherRes = await fetch(`${API_URL}?lat=${place.latitude}&lon=${place.longitude}`);
+      if (!weatherRes.ok) {
+        throw new Error(`Weather API returned ${weatherRes.status}`);
+      }
+      const weather = await weatherRes.json();
+
+      const label = [place.name, place.admin1, place.country]
+        .filter(Boolean)
+        .join(', ');
+      const conditionText = WEATHER_CODES[weather.weathercode] ?? 'Unknown conditions';
+
+      resultEl.innerHTML = `
+        <div class="location">${label}</div>
+        <div class="temp">${Math.round(weather.temperature)}°C</div>
+        <div class="details">${conditionText} · Wind ${weather.windspeed} km/h</div>
+      `;
+    } catch (err) {
+      resultEl.innerHTML = `<div class="error">Something went wrong: ${err.message}</div>`;
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+</script>
+
+</body>
+</html>

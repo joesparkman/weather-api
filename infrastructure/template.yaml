@@ -1,0 +1,208 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Weather API learning project - Lambda function fronted by both an
+  HTTP API and a REST API (with API key + usage plan), demonstrating
+  the two API Gateway types side by side.
+
+  NOTE: the custom domain (weather-api.joesparkman.com) is intentionally
+  NOT included here. It depends on a certificate validation CNAME and a
+  final CNAME record added manually in GoDaddy's DNS manager (this
+  domain isn't delegated to Route 53), which isn't something plain
+  CloudFormation can automate end to end. See the README for those
+  manual steps.
+
+Parameters:
+  StageName:
+    Type: String
+    Default: dev
+    Description: Stage name for the REST API deployment
+
+Resources:
+
+  # ---------- Lambda ----------
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  GetWeatherFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: get-weather-demo
+      Runtime: python3.13
+      Handler: get_weather.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 5
+      Code:
+        # For a real deploy, package lambda/get_weather.py (e.g. via
+        # `aws cloudformation package` or SAM) rather than inlining it.
+        # Inline is used here just to keep this template self-contained.
+        ZipFile: |
+          import json
+          import urllib.request
+
+          def lambda_handler(event, context):
+              params = event.get('queryStringParameters') or {}
+              lat = params.get('lat', '33.7490')
+              lon = params.get('lon', '-84.3880')
+              url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
+              try:
+                  with urllib.request.urlopen(url, timeout=5) as response:
+                      data = json.loads(response.read().decode())
+              except Exception as e:
+                  return {
+                      'statusCode': 502,
+                      'headers': {'Content-Type': 'application/json'},
+                      'body': json.dumps({'error': 'Failed to reach upstream weather service', 'detail': str(e)})
+                  }
+              return {
+                  'statusCode': 200,
+                  'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                  'body': json.dumps(data.get('current_weather', {}))
+              }
+
+  # ---------- HTTP API ----------
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: weather-demo-api
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowMethods: ['GET']
+        AllowHeaders: ['content-type']
+
+  HttpApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt GetWeatherFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  HttpApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'GET /weather'
+      Target: !Sub 'integrations/${HttpApiIntegration}'
+
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: '$default'
+      AutoDeploy: true
+
+  HttpApiLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref GetWeatherFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*/weather'
+
+  # ---------- REST API ----------
+
+  RestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: weather-demo-rest-api
+      EndpointConfiguration:
+        Types: [REGIONAL]
+
+  WeatherResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !GetAtt RestApi.RootResourceId
+      PathPart: weather
+
+  WeatherMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref WeatherResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetWeatherFunction.Arn}/invocations'
+
+  RestApiLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref GetWeatherFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/GET/weather'
+
+  RestApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: WeatherMethod
+    Properties:
+      RestApiId: !Ref RestApi
+
+  RestApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref RestApi
+      DeploymentId: !Ref RestApiDeployment
+      StageName: !Ref StageName
+
+  WeatherApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: weather-demo-key
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref RestApi
+          StageName: !Ref StageName
+
+  WeatherUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      UsagePlanName: weather-demo-usage-plan
+      ApiStages:
+        - ApiId: !Ref RestApi
+          Stage: !Ref RestApiStage
+      Throttle:
+        RateLimit: 10
+        BurstLimit: 5
+      Quota:
+        Limit: 1000
+        Period: DAY
+
+  WeatherUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref WeatherApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref WeatherUsagePlan
+
+Outputs:
+  HttpApiUrl:
+    Description: Invoke URL for the open, CORS-enabled HTTP API
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/weather'
+
+  RestApiUrl:
+    Description: Invoke URL for the API-key-protected REST API
+    Value: !Sub 'https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/weather'
+
+  ApiKeyId:
+    Description: >
+      ID of the generated API key. Retrieve the actual key VALUE with:
+      aws apigateway get-api-key --api-key <this-id> --include-value --query value --output text
+    Value: !Ref WeatherApiKey

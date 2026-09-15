@@ -1,0 +1,23 @@
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# AWS SAM / CloudFormation build artifacts
+.aws-sam/
+packaged-template.yaml
+
+# Secrets / env files (just in case you ever add one)
+.env
+.env.local
+
+# Archives
+*.zip
